@@ -1674,7 +1674,7 @@ static int smbchg_set_usb_current_max(struct smbchg_chip *chip,
 			}
 			chip->usb_max_current_ma = 500;
 		}
-		if ((current_ma <= CURRENT_150_MA) || (current_ma == CURRENT_500_MA) || (current_ma == CURRENT_900_MA)) {	// AP: Fast charge for USB
+		if (current_ma == CURRENT_900_MA) {
 			rc = smbchg_sec_masked_write(chip,
 					chip->usb_chgpth_base + CHGPTH_CFG,
 					CFG_USB_2_3_SEL_BIT, CFG_USB_3);
@@ -2133,8 +2133,6 @@ static void smbchg_parallel_usb_enable(struct smbchg_chip *chip)
 			rc);
 		goto disable_parallel;
 	}
-	rc = power_supply_set_voltage_limit(chip->usb_psy,
-			(chip->vfloat_mv + 50) * 1000);
 	chip->target_fastchg_current_ma = chip->cfg_fastchg_current_ma / 2;
 	smbchg_set_fastchg_current(chip, chip->target_fastchg_current_ma);
 	pval.intval = chip->target_fastchg_current_ma * 1000;
@@ -2908,11 +2906,8 @@ static int smbchg_float_voltage_set(struct smbchg_chip *chip, int vfloat_mv)
 
 	if (rc)
 		dev_err(chip->dev, "Couldn't set float voltage rc = %d\n", rc);
-	else {
+	else
 		chip->vfloat_mv = vfloat_mv;
-		power_supply_set_voltage_limit(chip->usb_psy,
-				chip->vfloat_mv * 1000);
-	}
 
 	return rc;
 }
@@ -6910,7 +6905,6 @@ static int smbchg_probe(struct spmi_device *spmi)
 
 	power_supply_set_present(chip->usb_psy, chip->usb_present);
 
-	update_usb_status(chip, is_usb_present(chip), false);
 	dump_regs(chip);
 	create_debugfs_entries(chip);
 	dev_info(chip->dev,

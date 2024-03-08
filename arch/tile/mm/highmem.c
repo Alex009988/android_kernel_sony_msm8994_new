@@ -202,7 +202,7 @@ void *kmap_atomic_prot(struct page *page, pgprot_t prot)
 	int idx, type;
 	pte_t *pte;
 
-	preempt_disable();
+	/* even !CONFIG_PREEMPT needs this, for in_atomic in do_page_fault */
 	pagefault_disable();
 
 	/* Avoid icache flushes by disallowing atomic executable mappings. */
@@ -261,7 +261,6 @@ void __kunmap_atomic(void *kvaddr)
 
 	arch_flush_lazy_mmu_mode();
 	pagefault_enable();
-	preempt_enable();
 }
 EXPORT_SYMBOL(__kunmap_atomic);
 

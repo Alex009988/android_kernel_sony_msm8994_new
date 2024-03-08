@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2015, 2017-2018 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -804,12 +804,12 @@ static void dci_process_ctrl_status(unsigned char *buf, int len, int token)
 {
 	struct diag_ctrl_dci_status *header = NULL;
 	unsigned char *temp = buf;
-	unsigned int read_len = 0;
+	uint32_t read_len = 0;
 	uint8_t i;
 	int peripheral_mask, status;
 
-	if (!buf || len < 2 || (len < sizeof(struct diag_ctrl_dci_status))) {
-		pr_err("diag: In %s, invalid buf %p or length: %d\n",
+	if (!buf || (len < sizeof(struct diag_ctrl_dci_status))) {
+		pr_err("diag: In %s, invalid buf %pK or length: %d\n",
 		       __func__, buf, len);
 		return;
 	}
@@ -824,7 +824,7 @@ static void dci_process_ctrl_status(unsigned char *buf, int len, int token)
 	read_len += sizeof(struct diag_ctrl_dci_status);
 
 	for (i = 0; i < header->count; i++) {
-		if (read_len > (len - 2)) {
+		if (read_len > len) {
 			pr_err("diag: In %s, Invalid length len: %d\n",
 			       __func__, len);
 			return;
@@ -866,9 +866,7 @@ static void dci_process_ctrl_handshake_pkt(unsigned char *buf, int len,
 	unsigned char *temp = buf;
 	int err = 0;
 
-	if (!buf)
-		return;
-	if (len < 0 || len < sizeof(struct diag_ctrl_dci_handshake_pkt))
+	if (!buf || (len < sizeof(struct diag_ctrl_dci_handshake_pkt)))
 		return;
 
 	if (!VALID_DCI_TOKEN(token))
@@ -1108,31 +1106,17 @@ void extract_dci_events(unsigned char *buf, int len, int data_source, int token)
 	struct list_head *start, *temp;
 	struct diag_dci_client_tbl *entry = NULL;
 
-	if (!buf) {
-		pr_err("diag: In %s buffer is NULL\n", __func__);
+	length =  *(uint16_t *)(buf + 1); /* total length of event series */
+	if (length == 0) {
+		pr_err("diag: Incoming dci event length is invalid\n");
 		return;
 	}
-
-	/*
-	 * 1 byte for event code and 2 bytes for the length field.
-	 * The length field indicates the total length removing the cmd_code
-	 * and the length field. The event parsing in that case should happen
-	 * till the end.
+	/* Move directly to the start of the event series. 1 byte for
+	 * event code and 2 bytes for the length field.
 	 */
-	if (len < 3) {
-		pr_err("diag: In %s invalid len: %d\n", __func__, len);
-		return;
-	}
-	length = *(uint16_t *)(buf + 1); /* total length of event series */
-	if ((length == 0) || (len != (length + 3))) {
-		pr_err("diag: Incoming dci event length: %d is invalid\n",
-			length);
-		return;
-	}
-	/*
-	 * Move directly to the start of the event series.
-	 * The event parsing should happen from start of event
-	 * series till the end.
+	/* The length field indicates the total length removing the cmd_code
+	 * and the lenght field. The event parsing in that case should happen
+	 * till the end.
 	 */
 	temp_len = 3;
 	while (temp_len < length) {
@@ -1150,60 +1134,30 @@ void extract_dci_events(unsigned char *buf, int len, int data_source, int token)
 			 * necessary.
 			 */
 			timestamp_len = 8;
-			if ((temp_len + timestamp_len + 2) <= len)
-				memcpy(timestamp, buf + temp_len + 2,
-					timestamp_len);
-			else {
-				pr_err("diag: Invalid length in %s, len: %d, temp_len: %d",
-						__func__, len, temp_len);
-				return;
-			}
+			memcpy(timestamp, buf + temp_len + 2, timestamp_len);
 		}
 		/* 13th and 14th bit represent the payload length */
 		if (((event_id_packet & 0x6000) >> 13) == 3) {
 			payload_len_field = 1;
-			if ((temp_len + timestamp_len + 3) <= len) {
-				payload_len = *(uint8_t *)
+			payload_len = *(uint8_t *)
 					(buf + temp_len + 2 + timestamp_len);
-			} else {
-				pr_err("diag: Invalid length in %s, len: %d, temp_len: %d",
-						__func__, len, temp_len);
-				return;
-			}
-			if ((payload_len < (MAX_EVENT_SIZE - 13)) &&
-			((temp_len + timestamp_len + payload_len + 3) <= len)) {
-				/*
-				 * Copy the payload length and the payload
-				 * after skipping temp_len bytes for already
-				 * parsed packet, timestamp_len for timestamp
-				 * buffer, 2 bytes for event_id_packet.
-				 */
+			if (payload_len < (MAX_EVENT_SIZE - 13)) {
+				/* copy the payload length and the payload */
 				memcpy(event_data + 12, buf + temp_len + 2 +
 							timestamp_len, 1);
 				memcpy(event_data + 13, buf + temp_len + 2 +
 					timestamp_len + 1, payload_len);
 			} else {
-				pr_err("diag: event > %d, payload_len = %d, temp_len = %d\n",
-				(MAX_EVENT_SIZE - 13), payload_len, temp_len);
+				pr_err("diag: event > %d, payload_len = %d\n",
+					(MAX_EVENT_SIZE - 13), payload_len);
 				return;
 			}
 		} else {
 			payload_len_field = 0;
 			payload_len = (event_id_packet & 0x6000) >> 13;
-			/*
-			 * Copy the payload after skipping temp_len bytes
-			 * for already parsed packet, timestamp_len for
-			 * timestamp buffer, 2 bytes for event_id_packet.
-			 */
-			if ((payload_len < (MAX_EVENT_SIZE - 12)) &&
-			((temp_len + timestamp_len + payload_len + 2) <= len))
-				memcpy(event_data + 12, buf + temp_len + 2 +
+			/* copy the payload */
+			memcpy(event_data + 12, buf + temp_len + 2 +
 						timestamp_len, payload_len);
-			else {
-				pr_err("diag: event > %d, payload_len = %d, temp_len = %d\n",
-				(MAX_EVENT_SIZE - 12), payload_len, temp_len);
-				return;
-			}
 		}
 
 		/* Before copying the data to userspace, check if we are still
@@ -1321,18 +1275,18 @@ void extract_dci_log(unsigned char *buf, int len, int data_source, int token)
 		pr_err("diag: In %s buffer is NULL\n", __func__);
 		return;
 	}
-	/*
-	 * The first eight bytes for the incoming log packet contains
-	 * Command code (2), the length of the packet (2), the length
-	 * of the log (2) and log code (2)
-	 */
-	if (len < 8) {
-		pr_err("diag: In %s invalid len: %d\n", __func__, len);
-		return;
-	}
 
+	/* The first six bytes for the incoming log packet contains
+	 * Command code (2), the length of the packet (2) and the length
+	 * of the log (2)
+	 */
 	log_code = *(uint16_t *)(buf + 6);
 	read_bytes += sizeof(uint16_t) + 6;
+	if (read_bytes > len) {
+		pr_err("diag: Invalid length in %s, len: %d, read: %d",
+						__func__, len, read_bytes);
+		return;
+	}
 
 	/* parse through log mask table of each client and check mask */
 	mutex_lock(&driver->dci_mutex);
@@ -1371,7 +1325,6 @@ void diag_update_smd_dci_work_fn(struct work_struct *work)
 	 * which log entries in the cumulative logs that need
 	 * to be updated on the peripheral.
 	 */
-	mutex_lock(&driver->dci_mutex);
 	list_for_each_safe(start, temp, &driver->dci_client_list) {
 		entry = list_entry(start, struct diag_dci_client_tbl, track);
 		if (entry->client_info.token != DCI_LOCAL_PROC)
@@ -1383,7 +1336,6 @@ void diag_update_smd_dci_work_fn(struct work_struct *work)
 			client_log_mask_ptr += 514;
 		}
 	}
-	mutex_unlock(&driver->dci_mutex);
 
 	mutex_lock(&dci_log_mask_mutex);
 	/* Update the appropriate dirty bits in the cumulative mask */
@@ -3057,12 +3009,13 @@ int diag_dci_deinit_client(struct diag_dci_client_tbl *entry)
 		return DIAG_DCI_NOT_SUPPORTED;
 
 	token = entry->client_info.token;
+
+	mutex_lock(&driver->dci_mutex);
 	/*
 	 * Remove the entry from the list before freeing the buffers
 	 * to ensure that we don't have any invalid access.
 	 */
-	if (!list_empty(&entry->track))
-		list_del(&entry->track);
+	list_del(&entry->track);
 	driver->num_dci_client--;
 	/*
 	 * Clear the client's log and event masks, update the cumulative
@@ -3091,8 +3044,7 @@ int diag_dci_deinit_client(struct diag_dci_client_tbl *entry)
 		req_entry = list_entry(start, struct dci_pkt_req_entry_t,
 				       track);
 		if (req_entry->client_id == entry->client_info.client_id) {
-			if (!list_empty(&req_entry->track))
-				list_del(&req_entry->track);
+			list_del(&req_entry->track);
 			kfree(req_entry);
 		}
 	}
@@ -3101,8 +3053,7 @@ int diag_dci_deinit_client(struct diag_dci_client_tbl *entry)
 	mutex_lock(&entry->write_buf_mutex);
 	list_for_each_entry_safe(buf_entry, temp, &entry->list_write_buf,
 							buf_track) {
-		if (!list_empty(&buf_entry->buf_track))
-			list_del(&buf_entry->buf_track);
+		list_del(&buf_entry->buf_track);
 		if (buf_entry->buf_type == DCI_BUF_SECONDARY) {
 			mutex_lock(&buf_entry->data_mutex);
 			diagmem_free(driver, buf_entry->data, POOL_TYPE_DCI);
@@ -3170,6 +3121,8 @@ int diag_dci_deinit_client(struct diag_dci_client_tbl *entry)
 		diag_update_real_time_vote(DIAG_PROC_DCI, real_time, token);
 	}
 	queue_work(driver->diag_real_time_wq, &driver->diag_real_time_work);
+
+	mutex_unlock(&driver->dci_mutex);
 
 	return DIAG_DCI_NO_ERROR;
 }

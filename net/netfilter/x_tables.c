@@ -221,9 +221,6 @@ xt_request_find_match(uint8_t nfproto, const char *name, uint8_t revision)
 {
 	struct xt_match *match;
 
-	if (strnlen(name, XT_EXTENSION_MAXNAMELEN) == XT_EXTENSION_MAXNAMELEN)
-		return ERR_PTR(-EINVAL);
-
 	match = xt_find_match(nfproto, name, revision);
 	if (IS_ERR(match)) {
 		request_module("%st_%s", xt_prefix[nfproto], name);
@@ -267,9 +264,6 @@ EXPORT_SYMBOL(xt_find_target);
 struct xt_target *xt_request_find_target(u8 af, const char *name, u8 revision)
 {
 	struct xt_target *target;
-
-	if (strnlen(name, XT_EXTENSION_MAXNAMELEN) == XT_EXTENSION_MAXNAMELEN)
-		return ERR_PTR(-EINVAL);
 
 	target = xt_find_target(af, name, revision);
 	if (IS_ERR(target)) {
@@ -383,36 +377,6 @@ textify_hooks(char *buf, size_t size, unsigned int mask, uint8_t nfproto)
 
 	return buf;
 }
-
-/**
- * xt_check_proc_name - check that name is suitable for /proc file creation
- *
- * @name: file name candidate
- * @size: length of buffer
- *
- * some x_tables modules wish to create a file in /proc.
- * This function makes sure that the name is suitable for this
- * purpose, it checks that name is NUL terminated and isn't a 'special'
- * name, like "..".
- *
- * returns negative number on error or 0 if name is useable.
- */
-int xt_check_proc_name(const char *name, unsigned int size)
-{
-	if (name[0] == '\0')
-		return -EINVAL;
-
-	if (strnlen(name, size) == size)
-		return -ENAMETOOLONG;
-
-	if (strcmp(name, ".") == 0 ||
-	    strcmp(name, "..") == 0 ||
-	    strchr(name, '/'))
-		return -EINVAL;
-
-	return 0;
-}
-EXPORT_SYMBOL(xt_check_proc_name);
 
 int xt_check_match(struct xt_mtchk_param *par,
 		   unsigned int size, u_int8_t proto, bool inv_proto)
@@ -584,7 +548,7 @@ void xt_compat_match_from_user(struct xt_entry_match *m, void **dstptr,
 {
 	const struct xt_match *match = m->u.kernel.match;
 	struct compat_xt_entry_match *cm = (struct compat_xt_entry_match *)m;
-	int off = xt_compat_match_offset(match);
+	int pad, off = xt_compat_match_offset(match);
 	u_int16_t msize = cm->u.user.match_size;
 	char name[sizeof(m->u.user.name)];
 
@@ -594,6 +558,9 @@ void xt_compat_match_from_user(struct xt_entry_match *m, void **dstptr,
 		match->compat_from_user(m->data, cm->data);
 	else
 		memcpy(m->data, cm->data, msize - sizeof(*cm));
+	pad = XT_ALIGN(match->matchsize) - match->matchsize;
+	if (pad > 0)
+		memset(m->data + match->matchsize, 0, pad);
 
 	msize += off;
 	m->u.user.match_size = msize;
@@ -694,9 +661,6 @@ EXPORT_SYMBOL(xt_compat_check_entry_offsets);
  * the target structure begins.
  *
  * Also see xt_compat_check_entry_offsets for CONFIG_COMPAT version.
- *
- * This function does not validate the targets or matches themselves, it
- * only tests that all the offsets and sizes are correct.
  *
  * The arp/ip/ip6t_entry structure @base must have passed following tests:
  * - it must point to a valid memory location
@@ -844,7 +808,7 @@ void *xt_copy_counters_from_user(const void __user *user, unsigned int len,
 		if (copy_from_user(&compat_tmp, user, sizeof(compat_tmp)) != 0)
 			return ERR_PTR(-EFAULT);
 
-		memcpy(info->name, compat_tmp.name, sizeof(info->name) - 1);
+		strlcpy(info->name, compat_tmp.name, sizeof(info->name));
 		info->num_counters = compat_tmp.num_counters;
 		user += sizeof(compat_tmp);
 	} else
@@ -857,9 +821,9 @@ void *xt_copy_counters_from_user(const void __user *user, unsigned int len,
 		if (copy_from_user(info, user, sizeof(*info)) != 0)
 			return ERR_PTR(-EFAULT);
 
+		info->name[sizeof(info->name) - 1] = '\0';
 		user += sizeof(*info);
 	}
-	info->name[sizeof(info->name) - 1] = '\0';
 
 	size = sizeof(struct xt_counters);
 	size *= info->num_counters;
@@ -892,7 +856,7 @@ void xt_compat_target_from_user(struct xt_entry_target *t, void **dstptr,
 {
 	const struct xt_target *target = t->u.kernel.target;
 	struct compat_xt_entry_target *ct = (struct compat_xt_entry_target *)t;
-	int off = xt_compat_target_offset(target);
+	int pad, off = xt_compat_target_offset(target);
 	u_int16_t tsize = ct->u.user.target_size;
 	char name[sizeof(t->u.user.name)];
 
@@ -902,6 +866,9 @@ void xt_compat_target_from_user(struct xt_entry_target *t, void **dstptr,
 		target->compat_from_user(t->data, ct->data);
 	else
 		memcpy(t->data, ct->data, tsize - sizeof(*ct));
+	pad = XT_ALIGN(target->targetsize) - target->targetsize;
+	if (pad > 0)
+		memset(t->data + target->targetsize, 0, pad);
 
 	tsize += off;
 	t->u.user.target_size = tsize;

@@ -113,15 +113,13 @@ static u32 wmi_addr_remap(u32 x)
 /**
  * Check address validity for WMI buffer; remap if needed
  * @ptr - internal (linker) fw/ucode address
- * @size - if non zero, validate the block does not
- *  exceed the device memory (bar)
  *
  * Valid buffer should be DWORD aligned
  *
  * return address for accessing buffer from the host;
  * if buffer is not valid, return NULL.
  */
-void __iomem *wmi_buffer_block(struct wil6210_priv *wil, __le32 ptr_, u32 size)
+void __iomem *wmi_buffer(struct wil6210_priv *wil, __le32 ptr_)
 {
 	u32 off;
 	u32 ptr = le32_to_cpu(ptr_);
@@ -136,15 +134,8 @@ void __iomem *wmi_buffer_block(struct wil6210_priv *wil, __le32 ptr_, u32 size)
 	off = HOSTADDR(ptr);
 	if (off > WIL6210_MEM_SIZE - 4)
 		return NULL;
-	if (size && ((off + size > WIL6210_MEM_SIZE) || (off + size < off)))
-		return NULL;
 
 	return wil->csr + off;
-}
-
-void __iomem *wmi_buffer(struct wil6210_priv *wil, __le32 ptr_)
-{
-	return wmi_buffer_block(wil, ptr_, 0);
 }
 
 /**
@@ -203,7 +194,7 @@ static int __wmi_send(struct wil6210_priv *wil, u16 cmdid, void *buf, u16 len)
 	void __iomem *head = wmi_addr(wil, r->head);
 	uint retry;
 
-	if (len > r->entry_size - sizeof(cmd)) {
+	if (sizeof(cmd) + len > r->entry_size) {
 		wil_err(wil, "WMI size too large: %d bytes, max is %d\n",
 			(int)(sizeof(cmd) + len), r->entry_size);
 		return -ERANGE;
@@ -290,6 +281,7 @@ int wmi_send(struct wil6210_priv *wil, u16 cmdid, void *buf, u16 len)
 /*=== Event handlers ===*/
 static void wmi_evt_ready(struct wil6210_priv *wil, int id, void *d, int len)
 {
+	struct net_device *ndev = wil_to_ndev(wil);
 	struct wireless_dev *wdev = wil->wdev;
 	struct wmi_ready_event *evt = d;
 
@@ -298,7 +290,11 @@ static void wmi_evt_ready(struct wil6210_priv *wil, int id, void *d, int len)
 
 	wil_info(wil, "FW ver. %d; MAC %pM; %d MID's\n", wil->fw_version,
 		 evt->mac, wil->n_mids);
-	/* ignore MAC address, we already have it from the boot loader */
+
+	if (!is_valid_ether_addr(ndev->dev_addr)) {
+		memcpy(ndev->dev_addr, evt->mac, ETH_ALEN);
+		memcpy(ndev->perm_addr, evt->mac, ETH_ALEN);
+	}
 	snprintf(wdev->wiphy->fw_version, sizeof(wdev->wiphy->fw_version),
 		 "%d", wil->fw_version);
 }
@@ -571,6 +567,7 @@ static void wil_addba_tx_cid(struct wil6210_priv *wil, u8 cid, u16 wsize)
 
 static void wmi_evt_linkup(struct wil6210_priv *wil, int id, void *d, int len)
 {
+	struct net_device *ndev = wil_to_ndev(wil);
 	struct wmi_data_port_open_event *evt = d;
 	u8 cid = evt->cid;
 
@@ -584,6 +581,7 @@ static void wmi_evt_linkup(struct wil6210_priv *wil, int id, void *d, int len)
 	wil->sta[cid].data_port_open = true;
 	if (agg_wsize >= 0)
 		wil_addba_tx_cid(wil, cid, agg_wsize);
+	netif_carrier_on(ndev);
 }
 
 static void wmi_evt_linkdown(struct wil6210_priv *wil, int id, void *d, int len)
@@ -884,7 +882,7 @@ int wmi_pcp_start(struct wil6210_priv *wil, int bi, u8 wmi_nettype, u8 chan)
 		struct wmi_pcp_started_event evt;
 	} __packed reply;
 
-	if (!wil->privacy)
+	if (!wil->secure_pcp)
 		cmd.disable_sec = 1;
 
 	if ((cmd.pcp_max_assoc_sta > WIL6210_MAX_CID) ||
@@ -1030,18 +1028,10 @@ int wmi_set_ie(struct wil6210_priv *wil, u8 type, u16 ie_len, const void *ie)
 {
 	int rc;
 	u16 len = sizeof(struct wmi_set_appie_cmd) + ie_len;
-	struct wmi_set_appie_cmd *cmd;
+	struct wmi_set_appie_cmd *cmd = kzalloc(len, GFP_KERNEL);
 
-	if (len < ie_len) {
-		rc = -EINVAL;
-		goto out;
-	}
-
-	cmd = kzalloc(len, GFP_KERNEL);
-	if (!cmd) {
-		rc = -ENOMEM;
-		goto out;
-	}
+	if (!cmd)
+		return -ENOMEM;
 	if (!ie)
 		ie_len = 0;
 
@@ -1052,7 +1042,6 @@ int wmi_set_ie(struct wil6210_priv *wil, u8 type, u16 ie_len, const void *ie)
 	rc = wmi_send(wil, WMI_SET_APPIE_CMDID, cmd, len);
 	kfree(cmd);
 
-out:
 	return rc;
 }
 
@@ -1145,13 +1134,12 @@ int wmi_rx_chain_add(struct wil6210_priv *wil, struct vring *vring)
 	return rc;
 }
 
-int wmi_get_temperature(struct wil6210_priv *wil, u32 *t_bb, u32 *t_rf)
+int wmi_get_temperature(struct wil6210_priv *wil, u32 *t_m, u32 *t_r)
 {
 	int rc;
 	struct wmi_temp_sense_cmd cmd = {
-		.measure_baseband_en = cpu_to_le32(!!t_bb),
-		.measure_rf_en = cpu_to_le32(!!t_rf),
-		.measure_mode = cpu_to_le32(TEMPERATURE_MEASURE_NOW),
+		.measure_marlon_m_en = cpu_to_le32(!!t_m),
+		.measure_marlon_r_en = cpu_to_le32(!!t_r),
 	};
 	struct {
 		struct wil6210_mbox_hdr_wmi wmi;
@@ -1163,10 +1151,10 @@ int wmi_get_temperature(struct wil6210_priv *wil, u32 *t_bb, u32 *t_rf)
 	if (rc)
 		return rc;
 
-	if (t_bb)
-		*t_bb = le32_to_cpu(reply.evt.baseband_t1000);
-	if (t_rf)
-		*t_rf = le32_to_cpu(reply.evt.rf_t1000);
+	if (t_m)
+		*t_m = le32_to_cpu(reply.evt.marlon_m_t1000);
+	if (t_r)
+		*t_r = le32_to_cpu(reply.evt.marlon_r_t1000);
 
 	return 0;
 }

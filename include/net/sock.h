@@ -758,7 +758,7 @@ static inline bool sk_stream_memory_free(const struct sock *sk)
 static inline void __sk_add_backlog(struct sock *sk, struct sk_buff *skb)
 {
 	/* dont let skb dst not refcounted, we are going to leave rcu lock */
-	skb_dst_force_safe(skb);
+	skb_dst_force(skb);
 
 	if (!sk->sk_backlog.tail)
 		sk->sk_backlog.head = skb;
@@ -812,41 +812,27 @@ static inline int sk_backlog_rcv(struct sock *sk, struct sk_buff *skb)
 	return sk->sk_backlog_rcv(sk, skb);
 }
 
-static inline void sock_rps_record_flow_hash(__u32 hash)
-{
-#ifdef CONFIG_RPS
-	struct rps_sock_flow_table *sock_flow_table;
-
-	rcu_read_lock();
-	sock_flow_table = rcu_dereference(rps_sock_flow_table);
-	rps_record_sock_flow(sock_flow_table, hash);
-	rcu_read_unlock();
-#endif
-}
-
-static inline void sock_rps_reset_flow_hash(__u32 hash)
-{
-#ifdef CONFIG_RPS
-	struct rps_sock_flow_table *sock_flow_table;
-
-	rcu_read_lock();
-	sock_flow_table = rcu_dereference(rps_sock_flow_table);
-	rps_reset_sock_flow(sock_flow_table, hash);
-	rcu_read_unlock();
-#endif
-}
-
 static inline void sock_rps_record_flow(const struct sock *sk)
 {
 #ifdef CONFIG_RPS
-	sock_rps_record_flow_hash(sk->sk_rxhash);
+	struct rps_sock_flow_table *sock_flow_table;
+
+	rcu_read_lock();
+	sock_flow_table = rcu_dereference(rps_sock_flow_table);
+	rps_record_sock_flow(sock_flow_table, sk->sk_rxhash);
+	rcu_read_unlock();
 #endif
 }
 
 static inline void sock_rps_reset_flow(const struct sock *sk)
 {
 #ifdef CONFIG_RPS
-	sock_rps_reset_flow_hash(sk->sk_rxhash);
+	struct rps_sock_flow_table *sock_flow_table;
+
+	rcu_read_lock();
+	sock_flow_table = rcu_dereference(rps_sock_flow_table);
+	rps_reset_sock_flow(sock_flow_table, sk->sk_rxhash);
+	rcu_read_unlock();
 #endif
 }
 
@@ -889,7 +875,7 @@ extern void sk_stream_kill_queues(struct sock *sk);
 extern void sk_set_memalloc(struct sock *sk);
 extern void sk_clear_memalloc(struct sock *sk);
 
-int sk_wait_data(struct sock *sk, long *timeo, const struct sk_buff *skb);
+extern int sk_wait_data(struct sock *sk, long *timeo);
 
 struct request_sock_ops;
 struct timewait_sock_ops;
@@ -2307,8 +2293,6 @@ bool sk_ns_capable(const struct sock *sk,
 		   struct user_namespace *user_ns, int cap);
 bool sk_capable(const struct sock *sk, int cap);
 bool sk_net_capable(const struct sock *sk, int cap);
-extern int sock_recv_errqueue(struct sock *sk, struct msghdr *msg, int len,
-			      int level, int type);
 
 /*
  *	Enable debug/info messages

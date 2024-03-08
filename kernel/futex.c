@@ -456,7 +456,7 @@ again:
 
 		key->both.offset |= FUT_OFF_INODE; /* inode-based key */
 		key->shared.inode = inode;
-		key->shared.pgoff = page_head->index;
+		key->shared.pgoff = basepage_index(page);
 		rcu_read_unlock();
 	}
 

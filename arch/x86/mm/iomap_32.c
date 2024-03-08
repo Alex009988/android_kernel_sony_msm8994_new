@@ -59,7 +59,6 @@ void *kmap_atomic_prot_pfn(unsigned long pfn, pgprot_t prot)
 	unsigned long vaddr;
 	int idx, type;
 
-	preempt_disable();
 	pagefault_disable();
 
 	type = kmap_atomic_idx_push();
@@ -116,6 +115,5 @@ iounmap_atomic(void __iomem *kvaddr)
 	}
 
 	pagefault_enable();
-	preempt_enable();
 }
 EXPORT_SYMBOL_GPL(iounmap_atomic);
