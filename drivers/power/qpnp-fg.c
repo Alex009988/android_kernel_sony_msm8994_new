@@ -1110,7 +1110,10 @@ static int fg_mem_masked_write(struct fg_chip *chip, u16 addr,
 
 static int soc_to_setpoint(int soc)
 {
-	return DIV_ROUND_CLOSEST(soc * 255, 100);
+	if (soc == 0)
+		return 1;
+	else
+		return DIV_ROUND_CLOSEST(soc * 255, 100);
 }
 
 static void batt_to_setpoint_adc(int vbatt_mv, u8 *data)
@@ -2340,6 +2343,7 @@ static enum power_supply_property fg_power_props[] = {
 	POWER_SUPPLY_PROP_VOLTAGE_MIN,
 	POWER_SUPPLY_PROP_CYCLE_COUNT,
 	POWER_SUPPLY_PROP_CYCLE_COUNT_ID,
+	POWER_SUPPLY_PROP_SOC_REPORTING_READY,
 #ifdef CONFIG_QPNP_FG_EXTENSION
 	POWER_SUPPLY_PROP_BATT_AGING,
 #endif
@@ -2434,6 +2438,9 @@ static int fg_power_get_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_NOW_RAW:
 		val->intval = get_sram_prop_now(chip, FG_DATA_CC_CHARGE);
+		break;
+	case POWER_SUPPLY_PROP_SOC_REPORTING_READY:
+		val->intval = !!chip->profile_loaded;
 		break;
 #ifdef CONFIG_QPNP_FG_EXTENSION
 	case POWER_SUPPLY_PROP_BATT_AGING:
@@ -2717,20 +2724,20 @@ static void fg_cap_learning_post_process(struct fg_chip *chip)
 
 #ifdef CONFIG_QPNP_FG_EXTENSION
 	max_inc_val = chip->learning_data.max_increment ?
-			chip->learning_data.learned_cc_uah
+			(int64_t)chip->learning_data.learned_cc_uah
 			* (1000 + chip->learning_data.max_increment) :
 			((int64_t)chip->nom_cap_uah) * 1000;
 #else
-	max_inc_val = chip->learning_data.learned_cc_uah
+	max_inc_val = (int64_t)chip->learning_data.learned_cc_uah
 			* (1000 + chip->learning_data.max_increment);
 #endif
 	do_div(max_inc_val, 1000);
 
-	min_dec_val = chip->learning_data.learned_cc_uah
+	min_dec_val = (int64_t)chip->learning_data.learned_cc_uah
 			* (1000 - chip->learning_data.max_decrement);
 	do_div(min_dec_val, 1000);
 
-	old_cap = chip->learning_data.learned_cc_uah;
+	old_cap = (int64_t)chip->learning_data.learned_cc_uah;
 	if (chip->learning_data.cc_uah > max_inc_val)
 		chip->learning_data.learned_cc_uah = max_inc_val;
 	else if (chip->learning_data.cc_uah < min_dec_val)
@@ -5397,7 +5404,7 @@ static int fg_common_hw_init(struct fg_chip *chip)
 			settings[FG_MEM_DELTA_SOC].offset);
 #else
 	rc = fg_mem_masked_write(chip, settings[FG_MEM_DELTA_SOC].address, 0xFF,
-			soc_to_setpoint(settings[FG_MEM_DELTA_SOC].value),
+			settings[FG_MEM_DELTA_SOC].value == 1 ? 1 : soc_to_setpoint(settings[FG_MEM_DELTA_SOC].value),
 			settings[FG_MEM_DELTA_SOC].offset);
 #endif
 
@@ -5973,8 +5980,8 @@ static int fg_suspend(struct device *dev)
 	if (!chip->sw_rbias_ctrl)
 		return 0;
 
-	cancel_delayed_work(&chip->update_temp_work);
-	cancel_delayed_work(&chip->update_sram_data);
+	cancel_delayed_work_sync(&chip->update_temp_work);
+	cancel_delayed_work_sync(&chip->update_sram_data);
 
 	return 0;
 }

@@ -1,4 +1,5 @@
-/* Copyright (c) 2008-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2008-2015, 2017-2018 The Linux Foundation.
+ * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -322,9 +323,9 @@ static int diagchar_open(struct inode *inode, struct file *file)
 	return -ENOMEM;
 
 fail:
-	mutex_unlock(&driver->diagchar_mutex);
 	driver->num_clients--;
-	pr_alert("diag: Insufficient memory for new client");
+	mutex_unlock(&driver->diagchar_mutex);
+	pr_err_ratelimited("diag: Insufficient memory for new client");
 	return -ENOMEM;
 }
 
@@ -348,9 +349,11 @@ static int diagchar_close(struct inode *inode, struct file *file)
 	* This will specially help in case of ungraceful exit of any DCI client
 	* This call will remove any pending registrations of such client
 	*/
-	dci_entry = dci_lookup_client_entry_pid(current->tgid);
+	mutex_lock(&driver->dci_mutex);
+	dci_entry = dci_lookup_client_entry_pid(current->pid);
 	if (dci_entry)
 		diag_dci_deinit_client(dci_entry);
+	mutex_unlock(&driver->dci_mutex);
 	/* If the exiting process is the socket process */
 	mutex_lock(&driver->diagchar_mutex);
 	if (driver->socket_process &&
@@ -1049,14 +1052,18 @@ static int diag_ioctl_lsm_deinit(void)
 {
 	int i;
 
+	mutex_lock(&driver->diagchar_mutex);
 	for (i = 0; i < driver->num_clients; i++)
 		if (driver->client_map[i].pid == current->tgid)
 			break;
 
-	if (i == driver->num_clients)
+	if (i == driver->num_clients) {
+		mutex_unlock(&driver->diagchar_mutex);
 		return -EINVAL;
+	}
 
 	driver->data_ready[i] |= DEINIT_TYPE;
+	mutex_unlock(&driver->diagchar_mutex);
 	wake_up_interruptible(&driver->wait_q);
 
 	return 1;
@@ -1257,22 +1264,32 @@ long diagchar_compat_ioctl(struct file *filp,
 		result = diag_ioctl_dci_reg(ioarg);
 		break;
 	case DIAG_IOCTL_DCI_DEINIT:
+		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user((void *)&client_id, (void __user *)ioarg,
-			sizeof(int)))
+			sizeof(int))) {
+			mutex_unlock(&driver->dci_mutex);
 			return -EFAULT;
+		}
 		dci_client = diag_dci_get_client_entry(client_id);
-		if (!dci_client)
+		if (!dci_client) {
+			mutex_unlock(&driver->dci_mutex);
 			return DIAG_DCI_NOT_SUPPORTED;
+		}
 		result = diag_dci_deinit_client(dci_client);
+		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_SUPPORT:
 		result = diag_ioctl_dci_support(ioarg);
 		break;
 	case DIAG_IOCTL_DCI_HEALTH_STATS:
+		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_dci_health_stats(ioarg);
+		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_LOG_STATUS:
+		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_dci_log_status(ioarg);
+		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_EVENT_STATUS:
 		mutex_lock(&driver->dci_mutex);
@@ -1280,16 +1297,24 @@ long diagchar_compat_ioctl(struct file *filp,
 		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_CLEAR_LOGS:
+		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user((void *)&client_id, (void __user *)ioarg,
-			sizeof(int)))
+			sizeof(int))) {
+			mutex_unlock(&driver->dci_mutex);
 			return -EFAULT;
+		}
 		result = diag_dci_clear_log_mask(client_id);
+		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_CLEAR_EVENTS:
+		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user(&client_id, (void __user *)ioarg,
-			sizeof(int)))
+			sizeof(int))) {
+			mutex_unlock(&driver->dci_mutex);
 			return -EFAULT;
+		}
 		result = diag_dci_clear_event_mask(client_id);
+		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_LSM_DEINIT:
 		result = diag_ioctl_lsm_deinit();
@@ -1309,7 +1334,9 @@ long diagchar_compat_ioctl(struct file *filp,
 			result = 1;
 		break;
 	case DIAG_IOCTL_VOTE_REAL_TIME:
+		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_vote_real_time(ioarg);
+		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_GET_REAL_TIME:
 		result = diag_ioctl_get_real_time(ioarg);
@@ -1356,22 +1383,32 @@ long diagchar_ioctl(struct file *filp,
 		result = diag_ioctl_dci_reg(ioarg);
 		break;
 	case DIAG_IOCTL_DCI_DEINIT:
+		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user((void *)&client_id, (void __user *)ioarg,
-			sizeof(int)))
+			sizeof(int))) {
+			mutex_unlock(&driver->dci_mutex);
 			return -EFAULT;
+		}
 		dci_client = diag_dci_get_client_entry(client_id);
-		if (!dci_client)
+		if (!dci_client) {
+			mutex_unlock(&driver->dci_mutex);
 			return DIAG_DCI_NOT_SUPPORTED;
+		}
 		result = diag_dci_deinit_client(dci_client);
+		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_SUPPORT:
 		result = diag_ioctl_dci_support(ioarg);
 		break;
 	case DIAG_IOCTL_DCI_HEALTH_STATS:
+		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_dci_health_stats(ioarg);
+		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_LOG_STATUS:
+		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_dci_log_status(ioarg);
+		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_EVENT_STATUS:
 		mutex_lock(&driver->dci_mutex);
@@ -1379,16 +1416,24 @@ long diagchar_ioctl(struct file *filp,
 		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_CLEAR_LOGS:
+		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user((void *)&client_id, (void __user *)ioarg,
-			sizeof(int)))
+			sizeof(int))) {
+			mutex_unlock(&driver->dci_mutex);
 			return -EFAULT;
+		}
 		result = diag_dci_clear_log_mask(client_id);
+		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_DCI_CLEAR_EVENTS:
+		mutex_lock(&driver->dci_mutex);
 		if (copy_from_user(&client_id, (void __user *)ioarg,
-			sizeof(int)))
+			sizeof(int))) {
+			mutex_unlock(&driver->dci_mutex);
 			return -EFAULT;
+		}
 		result = diag_dci_clear_event_mask(client_id);
+		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_LSM_DEINIT:
 		result = diag_ioctl_lsm_deinit();
@@ -1408,7 +1453,9 @@ long diagchar_ioctl(struct file *filp,
 			result = 1;
 		break;
 	case DIAG_IOCTL_VOTE_REAL_TIME:
+		mutex_lock(&driver->dci_mutex);
 		result = diag_ioctl_vote_real_time(ioarg);
+		mutex_unlock(&driver->dci_mutex);
 		break;
 	case DIAG_IOCTL_GET_REAL_TIME:
 		result = diag_ioctl_get_real_time(ioarg);
@@ -1585,6 +1632,7 @@ exit:
 				goto end;
 			}
 		}
+		mutex_lock(&driver->diagchar_mutex);
 		for (i = 0; i < NUM_SMD_DCI_CHANNELS; i++) {
 			if (driver->smd_dci[i].ch) {
 				queue_work(driver->diag_dci_wq,
@@ -1602,6 +1650,7 @@ exit:
 				}
 			}
 		}
+		mutex_unlock(&driver->diagchar_mutex);
 		mutex_unlock(&driver->dci_mutex);
 		goto end;
 	}

@@ -2520,7 +2520,7 @@ int mdss_mdp_ctl_intf_event(struct mdss_mdp_ctl *ctl, int event, void *arg)
 			rc = pdata->event_handler(pdata, event, arg);
 		pdata = pdata->next;
 	} while (rc == 0 && pdata && pdata->active);
-	
+
 	return rc;
 }
 
