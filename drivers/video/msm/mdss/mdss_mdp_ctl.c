@@ -2502,7 +2502,6 @@ int mdss_mdp_ctl_destroy(struct mdss_mdp_ctl *ctl)
 	return 0;
 }
 
-
 int mdss_mdp_ctl_intf_event(struct mdss_mdp_ctl *ctl, int event, void *arg)
 {
 	struct mdss_panel_data *pdata;
@@ -2519,7 +2518,7 @@ int mdss_mdp_ctl_intf_event(struct mdss_mdp_ctl *ctl, int event, void *arg)
 		if (pdata->event_handler)
 			rc = pdata->event_handler(pdata, event, arg);
 		pdata = pdata->next;
-	} while (rc == 0 && pdata && pdata->active);
+		} while (rc == 0 && pdata && pdata->active);
 
 	return rc;
 }
