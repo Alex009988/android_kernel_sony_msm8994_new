@@ -101,7 +101,6 @@ struct netconsole_target {
 	struct config_item	item;
 #endif
 	int			enabled;
-	struct mutex		mutex;
 	struct netpoll		np;
 };
 
@@ -181,7 +180,6 @@ static struct netconsole_target *alloc_param_target(char *target_config)
 	strlcpy(nt->np.dev_name, "eth0", IFNAMSIZ);
 	nt->np.local_port = 6665;
 	nt->np.remote_port = 6666;
-	mutex_init(&nt->mutex);
 	memset(nt->np.remote_mac, 0xff, ETH_ALEN);
 
 	/* Parse parameters and setup netpoll */
@@ -309,7 +307,6 @@ static ssize_t store_enabled(struct netconsole_target *nt,
 			     const char *buf,
 			     size_t count)
 {
-	unsigned long flags;
 	int enabled;
 	int err;
 
@@ -325,6 +322,7 @@ static ssize_t store_enabled(struct netconsole_target *nt,
 	}
 
 	if (enabled) {	/* 1 */
+
 		/*
 		 * Skip netpoll_parse_options() -- all the attributes are
 		 * already configured via configfs. Just print them out.
@@ -336,14 +334,8 @@ static ssize_t store_enabled(struct netconsole_target *nt,
 			return err;
 
 		printk(KERN_INFO "netconsole: network logging started\n");
+
 	} else {	/* 0 */
-		/* We need to disable the netconsole before cleaning it up
-		 * otherwise we might end up in write_msg() with
-		 * nt->np.dev == NULL and nt->enabled == 1
-		 */
-		spin_lock_irqsave(&target_list_lock, flags);
-		nt->enabled = 0;
-		spin_unlock_irqrestore(&target_list_lock, flags);
 		netpoll_cleanup(&nt->np);
 	}
 
@@ -564,10 +556,8 @@ static ssize_t netconsole_target_attr_store(struct config_item *item,
 	struct netconsole_target_attr *na =
 		container_of(attr, struct netconsole_target_attr, attr);
 
-	mutex_lock(&nt->mutex);
 	if (na->store)
 		ret = na->store(nt, buf, count);
-	mutex_unlock(&nt->mutex);
 
 	return ret;
 }
@@ -606,7 +596,6 @@ static struct config_item *make_netconsole_target(struct config_group *group,
 	strlcpy(nt->np.dev_name, "eth0", IFNAMSIZ);
 	nt->np.local_port = 6665;
 	nt->np.remote_port = 6666;
-	mutex_init(&nt->mutex);
 	memset(nt->np.remote_mac, 0xff, ETH_ALEN);
 
 	/* Initialize the config_item member */
@@ -688,13 +677,12 @@ restart:
 			case NETDEV_RELEASE:
 			case NETDEV_JOIN:
 			case NETDEV_UNREGISTER:
-				/* rtnl_lock already held
+				/*
+				 * rtnl_lock already held
 				 * we might sleep in __netpoll_cleanup()
 				 */
 				spin_unlock_irqrestore(&target_list_lock, flags);
-
 				__netpoll_cleanup(&nt->np);
-
 				spin_lock_irqsave(&target_list_lock, flags);
 				dev_put(nt->np.dev);
 				nt->np.dev = NULL;

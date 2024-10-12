@@ -1172,6 +1172,7 @@ static int mdss_dsi_unblank(struct mdss_panel_data *pdata)
 	}
 
 
+
 error:
 	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 0);
 	pr_debug("%s-:\n", __func__);

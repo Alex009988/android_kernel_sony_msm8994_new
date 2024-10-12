@@ -1333,7 +1333,7 @@ static void somc_chg_aicl_reset_params(void)
 }
 
 #define AICL_PERIOD_MS			200
-#define AICL_WAKE_PERIOD		(10000)
+#define AICL_WAKE_PERIOD		(10 * HZ)
 static void somc_chg_aicl_work(struct work_struct *work)
 {
 	if (!*chg_params->usb_present)
@@ -1353,8 +1353,7 @@ static void somc_chg_aicl_work(struct work_struct *work)
 			*chg_params->usb_suspended,
 			chg_params->last_therm_lvl_sel,
 			*chg_params->thermal.lvl_sel);
-		wake_lock_timeout(&chg_params->aicl_wakelock,
-							msecs_to_jiffies(AICL_WAKE_PERIOD));
+		wake_lock_timeout(&chg_params->aicl_wakelock, AICL_WAKE_PERIOD);
 		somc_chg_aicl_reset_params();
 		somc_chg_set_thermal_limited_iusb_max(IUSBMAX_MIN_0MA);
 		chg_params->last_usb_target_current_ma =
@@ -1410,7 +1409,7 @@ void somc_chg_aicl_start_work(void)
 		*chg_params->usb_present) {
 			pr_info("Start aicl worker\n");
 			wake_lock_timeout(&chg_params->aicl_wakelock,
-							msecs_to_jiffies(AICL_WAKE_PERIOD));
+							AICL_WAKE_PERIOD);
 			somc_chg_set_thermal_limited_iusb_max(IUSBMAX_MIN_0MA);
 			somc_chg_forced_iusb_dec_clear_params();
 			schedule_delayed_work(&chg_params->aicl_work,
@@ -2406,11 +2405,6 @@ static unsigned int *somc_chg_therm_create_tb(struct device *dev,
 
 	if (of_find_property(node, thermal, &thermal_levels)) {
 		thermal_size = thermal_levels / sizeof(int);
-		if (!thermal_levels || !thermal_size) {
-			dev_err(dev, "Invalid thermal parameters\n");
-			*size = -EINVAL;
-			return NULL;
-		}
 		thermal_tb = devm_kzalloc(dev, thermal_levels, GFP_KERNEL);
 		if (thermal_tb == NULL) {
 			dev_err(dev, "thermal mitigation kzalloc() failed.\n");
@@ -2855,11 +2849,10 @@ void somc_batfet_open(struct device *dev, bool open)
 	}
 }
 
-#define UNPLUG_WAKE_PERIOD		(3000)
+#define UNPLUG_WAKE_PERIOD		(3 * HZ)
 void somc_unplug_wakelock(void)
 {
-	wake_lock_timeout(&chg_params->unplug_wakelock,
-						msecs_to_jiffies(UNPLUG_WAKE_PERIOD));
+	wake_lock_timeout(&chg_params->unplug_wakelock, UNPLUG_WAKE_PERIOD);
 }
 
 #define VFLOAT_CMP_CFG_REG		0xF5

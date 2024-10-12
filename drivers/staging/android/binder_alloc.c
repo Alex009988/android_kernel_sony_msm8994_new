@@ -1,4 +1,4 @@
- /* binder_alloc.c
+/* binder_alloc.c
  *
  * Android IPC Subsystem
  *
@@ -18,7 +18,6 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <asm/cacheflush.h>
-#include <linux/err.h>
 #include <linux/list.h>
 #include <linux/mm.h>
 #include <linux/module.h>
@@ -28,9 +27,6 @@
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
-#include <linux/ratelimit.h>
-#include <linux/highmem.h>
-#include <linux/sizes.h>
 #include <linux/list_lru.h>
 #include "binder_alloc.h"
 #include "binder_trace.h"
@@ -47,12 +43,12 @@ enum {
 static uint32_t binder_alloc_debug_mask;
 
 module_param_named(debug_mask, binder_alloc_debug_mask,
-		   uint, 0644);
+		   uint, S_IWUSR | S_IRUGO);
 
 #define binder_alloc_debug(mask, x...) \
 	do { \
 		if (binder_alloc_debug_mask & mask) \
-			pr_info_ratelimited(x); \
+			pr_info(x); \
 	} while (0)
 
 static struct binder_buffer *binder_buffer_next(struct binder_buffer *buffer)
@@ -222,7 +218,7 @@ static int binder_update_page_range(struct binder_alloc *alloc, int allocate,
 		mm = alloc->vma_vm_mm;
 
 	if (mm) {
-		down_read(&mm->mmap_sem);
+		down_write(&mm->mmap_sem);
 		vma = alloc->vma;
 	}
 
@@ -262,9 +258,6 @@ static int binder_update_page_range(struct binder_alloc *alloc, int allocate,
 				alloc->pid, page_addr);
 			goto err_alloc_page_failed;
 		}
-		if (WARN_ON(!vma))
-			goto err_page_ptr_cleared;
-
 		page->alloc = alloc;
 		INIT_LIST_HEAD(&page->lru);
 
@@ -294,13 +287,14 @@ static int binder_update_page_range(struct binder_alloc *alloc, int allocate,
 		/* vm_insert_page does not seem to increment the refcount */
 	}
 	if (mm) {
-		up_read(&mm->mmap_sem);
+		up_write(&mm->mmap_sem);
 		mmput(mm);
 	}
 	return 0;
 
 free_range:
-	for (page_addr = end - PAGE_SIZE; 1; page_addr -= PAGE_SIZE) {
+	for (page_addr = end - PAGE_SIZE; page_addr >= start;
+	     page_addr -= PAGE_SIZE) {
 		bool ret;
 		size_t index;
 
@@ -313,8 +307,6 @@ free_range:
 		WARN_ON(!ret);
 
 		trace_binder_free_lru_end(alloc, index);
-		if (page_addr == start)
-			break;
 		continue;
 
 err_vm_insert_page_failed:
@@ -324,89 +316,21 @@ err_map_kernel_failed:
 		page->page_ptr = NULL;
 err_alloc_page_failed:
 err_page_ptr_cleared:
-		if (page_addr == start)
-			break;
+		;
 	}
 err_no_vma:
 	if (mm) {
-		up_read(&mm->mmap_sem);
+		up_write(&mm->mmap_sem);
 		mmput(mm);
 	}
 	return vma ? -ENOMEM : -ESRCH;
 }
 
-
-static inline void binder_alloc_set_vma(struct binder_alloc *alloc,
-		struct vm_area_struct *vma)
-{
-	if (vma)
-		alloc->vma_vm_mm = vma->vm_mm;
-	/*
-	 * If we see alloc->vma is not NULL, buffer data structures set up
-	 * completely. Look at smp_rmb side binder_alloc_get_vma.
-	 * We also want to guarantee new alloc->vma_vm_mm is always visible
-	 * if alloc->vma is set.
-	 */
-	smp_wmb();
-	alloc->vma = vma;
-}
-
-static inline struct vm_area_struct *binder_alloc_get_vma(
-		struct binder_alloc *alloc)
-{
-	struct vm_area_struct *vma = NULL;
-
-	if (alloc->vma) {
-		/* Look at description in binder_alloc_set_vma */
-		smp_rmb();
-		vma = alloc->vma;
-	}
-	return vma;
-}
-
-static void debug_low_async_space_locked(struct binder_alloc *alloc, int pid)
-{
-	/*
-	 * Find the amount and size of buffers allocated by the current caller;
-	 * The idea is that once we cross the threshold, whoever is responsible
-	 * for the low async space is likely to try to send another async txn,
-	 * and at some point we'll catch them in the act. This is more efficient
-	 * than keeping a map per pid.
-	 */
-	struct rb_node *n = alloc->free_buffers.rb_node;
-	struct binder_buffer *buffer;
-	size_t total_alloc_size = 0;
-	size_t num_buffers = 0;
-
-	for (n = rb_first(&alloc->allocated_buffers); n != NULL;
-		 n = rb_next(n)) {
-		buffer = rb_entry(n, struct binder_buffer, rb_node);
-		if (buffer->pid != pid)
-			continue;
-		if (!buffer->async_transaction)
-			continue;
-		total_alloc_size += binder_alloc_buffer_size(alloc, buffer)
-			+ sizeof(struct binder_buffer);
-		num_buffers++;
-	}
-
-	/*
-	 * Warn if this pid has more than 50 transactions, or more than 50% of
-	 * async space (which is 25% of total buffer size).
-	 */
-	if (num_buffers > 50 || total_alloc_size > alloc->buffer_size / 4) {
-		pr_err("%d: pid %d spamming oneway? %zd buffers allocated for a total size of %zd\n",
-			      alloc->pid, pid, num_buffers, total_alloc_size);
-	}
-}
-
-static struct binder_buffer *binder_alloc_new_buf_locked(
-				struct binder_alloc *alloc,
-				size_t data_size,
-				size_t offsets_size,
-				size_t extra_buffers_size,
-				int is_async,
-				int pid)
+struct binder_buffer *binder_alloc_new_buf_locked(struct binder_alloc *alloc,
+						  size_t data_size,
+						  size_t offsets_size,
+						  size_t extra_buffers_size,
+						  int is_async)
 {
 	struct rb_node *n = alloc->free_buffers.rb_node;
 	struct binder_buffer *buffer;
@@ -417,7 +341,7 @@ static struct binder_buffer *binder_alloc_new_buf_locked(
 	size_t size, data_offsets_size;
 	int ret;
 
-	if (!binder_alloc_get_vma(alloc)) {
+	if (alloc->vma == NULL) {
 		pr_err("%d: binder_alloc_buf, no vma\n",
 		       alloc->pid);
 		return ERR_PTR(-ESRCH);
@@ -545,20 +469,11 @@ static struct binder_buffer *binder_alloc_new_buf_locked(
 	buffer->offsets_size = offsets_size;
 	buffer->async_transaction = is_async;
 	buffer->extra_buffers_size = extra_buffers_size;
-	buffer->pid = pid;
 	if (is_async) {
 		alloc->free_async_space -= size + sizeof(struct binder_buffer);
 		binder_alloc_debug(BINDER_DEBUG_BUFFER_ALLOC_ASYNC,
 			     "%d: binder_alloc_buf size %zd async free %zd\n",
 			      alloc->pid, size, alloc->free_async_space);
-		if (alloc->free_async_space < alloc->buffer_size / 10) {
-			/*
-			 * Start detecting spammers once we have less than 20%
-			 * of async space left (which is less than 10% of total
-			 * buffer size).
-			 */
-			debug_low_async_space_locked(alloc, pid);
-		}
 	}
 	return buffer;
 
@@ -576,7 +491,6 @@ err_alloc_buf_struct_failed:
  * @offsets_size:       user specified buffer offset
  * @extra_buffers_size: size of extra space for meta-data (eg, security context)
  * @is_async:           buffer for async transaction
- * @pid:				pid to attribute allocation to (used for debugging)
  *
  * Allocate a new buffer given the requested sizes. Returns
  * the kernel version of the buffer pointer. The size allocated
@@ -589,14 +503,13 @@ struct binder_buffer *binder_alloc_new_buf(struct binder_alloc *alloc,
 					   size_t data_size,
 					   size_t offsets_size,
 					   size_t extra_buffers_size,
-					   int is_async,
-					   int pid)
+					   int is_async)
 {
 	struct binder_buffer *buffer;
 
 	mutex_lock(&alloc->mutex);
 	buffer = binder_alloc_new_buf_locked(alloc, data_size, offsets_size,
-					     extra_buffers_size, is_async, pid);
+					     extra_buffers_size, is_async);
 	mutex_unlock(&alloc->mutex);
 	return buffer;
 }
@@ -638,7 +551,7 @@ static void binder_delete_free_buffer(struct binder_alloc *alloc,
 		}
 	}
 
-	if (IS_ALIGNED((unsigned long)buffer->data, PAGE_SIZE)) {
+	if (PAGE_ALIGNED(buffer->data)) {
 		binder_alloc_debug(BINDER_DEBUG_BUFFER_ALLOC,
 				   "%d: merge free, buffer start %pK is page aligned\n",
 				   alloc->pid, buffer->data);
@@ -755,7 +668,7 @@ int binder_alloc_mmap_handler(struct binder_alloc *alloc,
 		goto err_already_mapped;
 	}
 
-	area = get_vm_area(vma->vm_end - vma->vm_start, VM_ALLOC);
+	area = get_vm_area(vma->vm_end - vma->vm_start, VM_IOREMAP);
 	if (area == NULL) {
 		ret = -ENOMEM;
 		failure_string = "get_vm_area";
@@ -766,10 +679,19 @@ int binder_alloc_mmap_handler(struct binder_alloc *alloc,
 		vma->vm_start - (uintptr_t)alloc->buffer;
 	mutex_unlock(&binder_alloc_mmap_lock);
 
-	alloc->buffer_size = min_t(unsigned long, vma->vm_end - vma->vm_start,
-				   SZ_4M);
-	alloc->pages = kcalloc(alloc->buffer_size / PAGE_SIZE,
-			       sizeof(alloc->pages[0]),
+#ifdef CONFIG_CPU_CACHE_VIPT
+	if (cache_is_vipt_aliasing()) {
+		while (CACHE_COLOUR(
+				(vma->vm_start ^ (uint32_t)alloc->buffer))) {
+			pr_info("binder_mmap: %d %lx-%lx maps %pK bad alignment\n",
+				alloc->pid, vma->vm_start, vma->vm_end,
+				alloc->buffer);
+			vma->vm_start += PAGE_SIZE;
+		}
+	}
+#endif
+	alloc->pages = kzalloc(sizeof(alloc->pages[0]) *
+				   ((vma->vm_end - vma->vm_start) / PAGE_SIZE),
 			       GFP_KERNEL);
 	if (alloc->pages == NULL) {
 		ret = -ENOMEM;
@@ -790,7 +712,9 @@ int binder_alloc_mmap_handler(struct binder_alloc *alloc,
 	buffer->free = 1;
 	binder_insert_free_buffer(alloc, buffer);
 	alloc->free_async_space = alloc->buffer_size / 2;
-	binder_alloc_set_vma(alloc, vma);
+	barrier();
+	alloc->vma = vma;
+	alloc->vma_vm_mm = vma->vm_mm;
 	/* Same as mmgrab() in later kernel versions */
 	atomic_inc(&alloc->vma_vm_mm->mm_count);
 
@@ -964,7 +888,7 @@ int binder_alloc_get_allocated_count(struct binder_alloc *alloc)
  */
 void binder_alloc_vma_close(struct binder_alloc *alloc)
 {
-	binder_alloc_set_vma(alloc, NULL);
+	WRITE_ONCE(alloc->vma, NULL);
 }
 
 /**
@@ -1003,9 +927,9 @@ enum lru_status binder_alloc_free_page(struct list_head *item,
 	/* Same as mmget_not_zero() in later kernel versions */
 	if (!atomic_inc_not_zero(&alloc->vma_vm_mm->mm_users))
 		goto err_mmget;
-	if (!down_read_trylock(&mm->mmap_sem))
-		goto err_down_read_mmap_sem_failed;
-	vma = binder_alloc_get_vma(alloc);
+	if (!down_write_trylock(&mm->mmap_sem))
+		goto err_down_write_mmap_sem_failed;
+	vma = alloc->vma;
 
 	list_del_init(item);
 	spin_unlock(lock);
@@ -1014,13 +938,13 @@ enum lru_status binder_alloc_free_page(struct list_head *item,
 		trace_binder_unmap_user_start(alloc, index);
 
 		zap_page_range(vma,
-			       page_addr + alloc->user_buffer_offset,
+			       page_addr +
+			       alloc->user_buffer_offset,
 			       PAGE_SIZE, NULL);
 
 		trace_binder_unmap_user_end(alloc, index);
-
 	}
-	up_read(&mm->mmap_sem);
+	up_write(&mm->mmap_sem);
 	mmput(mm);
 
 	trace_binder_unmap_kernel_start(alloc, index);
@@ -1035,7 +959,7 @@ enum lru_status binder_alloc_free_page(struct list_head *item,
 	mutex_unlock(&alloc->mutex);
 	return LRU_REMOVED_RETRY;
 
-err_down_read_mmap_sem_failed:
+err_down_write_mmap_sem_failed:
 	mmput(mm);
 err_mmget:
 err_page_already_freed:

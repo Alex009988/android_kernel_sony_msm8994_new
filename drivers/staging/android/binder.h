@@ -1,4 +1,4 @@
- /*
+/*
  * Copyright (C) 2008 Google, Inc.
  *
  * Based on, but no longer compatible with, the original
@@ -20,7 +20,11 @@
 #ifndef _LINUX_BINDER_H
 #define _LINUX_BINDER_H
 
-#include <uapi/linux/android/binder.h>
+#ifdef CONFIG_ANDROID_BINDER_IPC_32BIT
+#define BINDER_IPC_32BIT 1
+#endif
+
+#include "uapi/binder.h"
 
 #endif /* _LINUX_BINDER_H */
 

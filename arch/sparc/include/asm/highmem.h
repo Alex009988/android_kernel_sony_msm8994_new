@@ -24,12 +24,11 @@
 #include <asm/vaddrs.h>
 #include <asm/kmap_types.h>
 #include <asm/pgtable.h>
-#include <asm/pgtsrmmu.h>
 
 /* declarations for highmem.c */
 extern unsigned long highstart_pfn, highend_pfn;
 
-#define kmap_prot __pgprot(SRMMU_ET_PTE | SRMMU_PRIV | SRMMU_CACHE)
+extern pgprot_t kmap_prot;
 extern pte_t *pkmap_page_table;
 
 extern void kmap_init(void) __init;
@@ -49,6 +48,28 @@ extern void kmap_init(void) __init;
 #define PKMAP_ADDR(nr)  (PKMAP_BASE + ((nr) << PAGE_SHIFT))
 
 #define PKMAP_END (PKMAP_ADDR(LAST_PKMAP))
+
+extern void *kmap_high(struct page *page);
+extern void kunmap_high(struct page *page);
+
+static inline void *kmap(struct page *page)
+{
+	BUG_ON(in_interrupt());
+	if (!PageHighMem(page))
+		return page_address(page);
+	return kmap_high(page);
+}
+
+static inline void kunmap(struct page *page)
+{
+	BUG_ON(in_interrupt());
+	if (!PageHighMem(page))
+		return;
+	kunmap_high(page);
+}
+
+extern void *kmap_atomic(struct page *page);
+extern void __kunmap_atomic(void *kvaddr);
 
 #define flush_cache_kmaps()	flush_cache_all()
 

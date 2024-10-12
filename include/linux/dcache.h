@@ -328,7 +328,7 @@ static inline int __d_rcu_to_refcount(struct dentry *dentry, unsigned seq)
 	return ret;
 }
 
-static inline unsigned d_count(const struct dentry *dentry)
+static inline unsigned d_count(struct dentry *dentry)
 {
 	return dentry->d_count;
 }
@@ -416,6 +416,23 @@ static inline bool d_managed(struct dentry *dentry)
 static inline bool d_mountpoint(struct dentry *dentry)
 {
 	return dentry->d_flags & DCACHE_MOUNTED;
+}
+
+/**
+ * d_inode - Get the actual inode of this dentry
+ * @dentry: The dentry to query
+ *
+ * This is the helper normal filesystems should use to get at their own inodes
+ * in their own dentries and ignore the layering superimposed upon them.
+ */
+static inline struct inode *d_inode(const struct dentry *dentry)
+{
+	return dentry->d_inode;
+}
+
+static inline bool d_is_negative(const struct dentry *dentry)
+{
+	return (dentry->d_inode == NULL);
 }
 
 extern int sysctl_vfs_cache_pressure;

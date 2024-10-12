@@ -594,10 +594,7 @@ static int macvlan_fdb_add(struct ndmsg *ndm, struct nlattr *tb[],
 	struct macvlan_dev *vlan = netdev_priv(dev);
 	int err = -EINVAL;
 
-	/* Support unicast filter only on passthru devices.
-	 * Multicast filter should be allowed on all devices.
-	 */
-	if (!vlan->port->passthru && is_unicast_ether_addr(addr))
+	if (!vlan->port->passthru)
 		return -EOPNOTSUPP;
 
 	if (is_unicast_ether_addr(addr))
@@ -615,10 +612,7 @@ static int macvlan_fdb_del(struct ndmsg *ndm, struct nlattr *tb[],
 	struct macvlan_dev *vlan = netdev_priv(dev);
 	int err = -EINVAL;
 
-	/* Support unicast filter only on passthru devices.
-	 * Multicast filter should be allowed on all devices.
-	 */
-	if (!vlan->port->passthru && is_unicast_ether_addr(addr))
+	if (!vlan->port->passthru)
 		return -EOPNOTSUPP;
 
 	if (is_unicast_ether_addr(addr))
